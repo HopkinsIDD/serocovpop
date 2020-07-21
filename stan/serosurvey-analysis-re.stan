@@ -40,8 +40,8 @@ model {
     target+= bernoulli_lpmf(survey_pos | p*sens+(1-p)*(1-spec));
     target+= binomial_lpmf(control_tp | N_pos_control, sens);
     target+= binomial_lpmf(control_fp | N_neg_control, 1-spec);
-    target+= normal_lpdf(eta_h | 0, 1);
-    target+= normal_lpdf(beta | 0, 1); // priors for coefficients
+    eta_h ~ std_normal();
+    beta ~ std_normal(); // priors for coefficients
 }
 
 generated quantities {
