@@ -40,47 +40,49 @@ out_est_file <- "generated_data/re-seropos.rds"
 ```
 
 ```{r validation data, include=FALSE}
-## bring in lab validation data
-lab_val_dat <- readxl::read_xlsx("data/20200508 Serology ELISA-IF validation overview_clean.xlsx", sheet = "All Results")
+## bring in lab validation data (from Meyer et al, doi: 10.1016/j.cmi.2020.06.024)
+## not including these data in public repo but have included numbers
+
+## lab_val_dat <- readxl::read_xlsx("data/20200508 Serology ELISA-IF validation overview_clean.xlsx", sheet = "All Results")
 
 ## number of positive controls from validation data
 ## Meyer et al, 2020
-pos_control <- sum(lab_val_dat$Type == "COVID-19 Patient") # 181
+pos_control <- 181 #sum(lab_val_dat$Type == "COVID-19 Patient") # 181
 ## number of negative controls
 ## Meyer et al, 2020
-neg_control <- sum(lab_val_dat$Type == "Neg. Ctrl.") # 176
+neg_control <- 176 #sum(lab_val_dat$Type == "Neg. Ctrl.") # 176
 
 ## true positive rate for cases
-control_tp_hi <- lab_val_dat %>%
-  filter(Type == "COVID-19 Patient") %>%
-  summarize(fp = sum(`ELISA/CE G Results` == "POS")) %>%
-  unlist() # 154
+control_tp_hi <- 154 #lab_val_dat %>%
+  #ilter(Type == "COVID-19 Patient") %>%
+  #summarize(fp = sum(`ELISA/CE G Results` == "POS")) %>%
+  #unlist() # 154
 
-control_tp_gva <- lab_val_dat %>%
-  filter(Type == "COVID-19 Patient") %>%
-  summarize(fp = sum(`ELISA/CE G Result GE` == "POS")) %>%
-  unlist() # 143
+control_tp_gva <- 143 #lab_val_dat %>%
+  #filter(Type == "COVID-19 Patient") %>%
+  #summarize(fp = sum(`ELISA/CE G Result GE` == "POS")) %>%
+  #unlist() # 143
 
-control_tp_ifa <- lab_val_dat %>%
-  filter(Type == "COVID-19 Patient") %>%
-  summarize(fp = sum(`ELISA/CE G Result GE` != "NEG" & `rIFA G Result` == "POS")) %>%
-  unlist() # 161
+control_tp_ifa <- 161 #lab_val_dat %>%
+  #filter(Type == "COVID-19 Patient") %>%
+  #summarize(fp = sum(`ELISA/CE G Result GE` != "NEG" & `rIFA G Result` == "POS")) %>%
+  #unlist() # 161
 
 ## false positive rate for controls (1-specificity)
-control_fp_hi <- lab_val_dat %>%
-  filter(Type == "Neg. Ctrl.") %>%
-  summarize(fp = sum(`ELISA/CE G Results` == "POS")) %>%
-  unlist()
+control_fp_hi <- 0 #lab_val_dat %>%
+  #filter(Type == "Neg. Ctrl.") %>%
+  #summarize(fp = sum(`ELISA/CE G Results` == "POS")) %>%
+  #unlist() #0 
 
-control_fp_gva <- lab_val_dat %>%
-  filter(Type == "Neg. Ctrl.") %>%
-  summarize(fp = sum(`ELISA/CE G Result GE` == "POS")) %>%
-  unlist()
+control_fp_gva <- 0 #lab_val_dat %>%
+  #filter(Type == "Neg. Ctrl.") %>%
+  #summarize(fp = sum(`ELISA/CE G Result GE` == "POS")) %>%
+  #unlist() #0 
 
-control_fp_ifa <- lab_val_dat %>%
-  filter(Type == "Neg. Ctrl.") %>%
-  summarize(fp = sum(`ELISA/CE G Result GE` != "NEG" & `rIFA G Result` == "POS")) %>%
-  unlist()
+control_fp_ifa <- 0 #lab_val_dat %>%
+  #filter(Type == "Neg. Ctrl.") %>%
+  #summarize(fp = sum(`ELISA/CE G Result GE` != "NEG" & `rIFA G Result` == "POS")) %>%
+  #unlist() #0
 ```
 
 ```{r epi data, include = FALSE}
