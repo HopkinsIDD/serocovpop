@@ -5,6 +5,8 @@ output:
     df_print: paged
   pdf_document: default
   word_document: default
+params:
+  redo: TRUE
 ---
 
 ```{r setup, include=FALSE}
@@ -35,7 +37,6 @@ n_treedepth <- 20
 
 # Output estimate file
 out_est_file <- "generated_data/re-seropos.rds"
-redo <- F
 ```
 
 ```{r validation data, include=FALSE}
@@ -249,7 +250,7 @@ sero_dat %>%
 
 ```{r re-stan, cache=F, eval=T}
 
-if (!file.exists(out_est_file) | redo) {
+if (!file.exists(out_est_file) | params$redo) {
   ## model the overall seropositivity with a random effect for household
   re_seropos <- run_analysis_stan_re(
     model_script = "stan/serosurvey-analysis-re.stan",
@@ -270,7 +271,7 @@ if (!file.exists(out_est_file) | redo) {
     ),
     save_warmup = F,
     seed = 1,
-    redo = redo
+    redo = params$redo
   )
   
   saveRDS(re_seropos, out_est_file)

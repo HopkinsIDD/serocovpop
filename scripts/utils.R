@@ -61,6 +61,10 @@ run_analysis_stan_re <- function(model_script,
                                  age_ref = "[20,50)",
                                  wk_ref = "2",
                                  redo = F,
+                                 chains,
+                                 iter,
+                                 warmup,
+                                 control, 
                                  ...) {
   ## Prepare data for analysis
   ana_suffix <- case_when(analysis == "ei" ~ "",
@@ -105,8 +109,10 @@ run_analysis_stan_re <- function(model_script,
                            N_neg_control = neg_control,
                            control_fp = control_fp
                          ),
-                         ...
-    )
+                         chains = chains,
+                         iter = iter,
+                         warmup = warmup,
+                         control = control)
     
     saveRDS(stan_est, stan_out_file)
   } else {
