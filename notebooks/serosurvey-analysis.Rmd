@@ -6,7 +6,7 @@ output:
   pdf_document: default
   word_document: default
 params:
-  redo: TRUE
+  redo: FALSE
 ---
 
 ```{r setup, include=FALSE}
@@ -28,7 +28,7 @@ cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2"
 age_cuts <- c(5, 10, 20, 50, 65, 105)
 
 ## Stan/JAGS settings, don't need to change
-options(mc.cores = 4)
+options(mc.cores = parallel::detectCores()-2) ## use all cores but two for this
 n_chains <- 4
 n_iter <- 1500
 n_warmup <- 250
@@ -411,3 +411,81 @@ subset_est %>%
   )
 ```
 
+## Estimate the time of seroconversion and the ratio of infections to reported confirmed cases
+
+To estimate the ratio of implied infections (seroprevalence) to the number of clinically confirmed cases we used the daily number of confirmed COVID-19 cases from the Canton of Geneva ([https://github.com/openZH/covid_19](https://github.com/openZH/covid_19)) and adjusted this time series by an assumed times from symptom onset to test result and from symptom onset to seroconversion. 
+
+
+```{r}
+library(icenReg)
+lab_val_dat <- readr::read_csv("data/lab_validation_data.csv") %>% 
+  mutate(pos = ifelse(pos=="POS",1,0),dps=as.numeric(dps)) %>%
+  mutate(TL=ifelse(pos==1,0,dps),
+         TR = ifelse(pos==1,dps,Inf)) %>%
+  na.omit()
+
+## create survival object
+my_surv <- with(lab_val_dat,survival::Surv(TL,TR,type = 'interval2'))
+
+fit_g <- icenReg::ic_par(cbind(TL,TR) ~ 1, model = "aft",dist = "gamma",data = lab_val_dat) 
+fit_w <- icenReg::ic_par(cbind(TL,TR) ~ 1, model = "aft",dist = "weibull",data = lab_val_dat) 
+fit_ln <- icenReg::ic_par(cbind(TL,TR) ~ 1, model = "aft",dist = "lnorm",data = lab_val_dat) 
+
+data.frame(fit_g$llk,fit_w$llk,fit_ln$llk)
+```
+
+```{r}
+plot(fit_ln,fun = "cdf",ylab="Proportion of cases seroconverted",xlab="days after symptom onset.")
+grid()
+```
+
+```{r}
+library(viridis)
+
+## assume mean of 6 days from symptom onset to reporting
+reporting_delay <- 6
+symptom_onset_dates <-seq(min(gva_dat$date) - reporting_delay,max(gva_dat$date),by="day")
+symptom_onsets <- c(gva_dat$conf_cases,rep(0,reporting_delay))
+
+## convolve 
+nmax <- 35 # max number of days in PDFS
+pdf_symp_seroconv <- dlnorm(seq(1, nmax), meanlog = coef(fit_ln)[1], sdlog = exp(coef(fit_ln)[2])) ## from GVA lab validation data (Meyer et al, 2020)
+pdf_symp_seroconv <- pdf_symp_seroconv/sum(pdf_symp_seroconv) ## truncating at nmax days
+
+extra_days_after <- length(pdf_symp_seroconv) -1
+serocov_days <- seq.Date(min(symptom_onset_dates), max(symptom_onset_dates)+ extra_days_after,by = "day")
+sero_cov <- convolve(symptom_onsets,pdf_symp_seroconv,type = "o")
+
+df <- data.frame(day=c(serocov_days,symptom_onset_dates,inc_dat$date),
+           outcome = c(sero_cov,symptom_onsets,inc_dat$incidI),
+           type=c(rep("seroconversion",length(serocov_days)),
+                  rep("symptom onset",length(symptom_onset_dates)),
+                  rep("date of test result",length(inc_dat$date))
+                  ))
+
+ggplot(data=df) + geom_bar(aes(x=day,y=outcome,fill=type,group=type),position = "identity",stat="identity",alpha=.5) +
+  geom_rect(aes(xmin=as.Date("2020-04-06"),xmax=as.Date("2020-04-10"),ymin=0,ymax=300),alpha=.3,color='grey',lty=2,fill=NA) +
+  geom_rect(aes(xmin=as.Date("2020-04-14"),xmax=as.Date("2020-04-17"),ymin=0,ymax=300),alpha=.3,color='grey',lty=2,fill=NA) +
+  geom_rect(aes(xmin=as.Date("2020-04-20"),xmax=as.Date("2020-04-24"),ymin=0,ymax=300),alpha=.3,color='grey',lty=2,fill=NA) +
+  geom_rect(aes(xmin=as.Date("2020-04-27"),xmax=as.Date("2020-05-02"),ymin=0,ymax=300),alpha=.3,color='grey',lty=2,fill=NA) +
+  geom_rect(aes(xmin=as.Date("2020-05-04"),xmax=as.Date("2020-05-09"),ymin=0,ymax=300),alpha=.3,color='grey',lty=2,fill=NA) + 
+  theme_minimal() + labs(fill="") + xlab("") + ylab("count") + scale_fill_viridis(discrete=TRUE) 
+
+## now how many cases do we expect to have seroconverted by mid point of the final week?
+mid_date_serosurvey <- as.Date("2020-05-06")
+cum_cases_sero <- sum(sero_cov[1:which(serocov_days==mid_date_serosurvey)])
+
+## cases to infections (can sample from posterior for some uncertainty unless we want to put this whole thing into a model)
+gva_pop <- read_csv("data/canton_age_2019.csv") %>% 
+  mutate_at(c("men","women","total"),
+            function(x) str_replace(x,pattern=" ", repl="") %>% as.numeric) 
+```
+
+To estimate the time of seroconversion for each confirmed case, we first shift back the time series of confirmed cases (time of confirmation) by 6 days assuming this fixed lag across the population.
+We then convoluted this time series with the time from symptom onset to seroconversion (truncated at 40 days).
+To calculate the ratio of implied infections to confirmed cases we then divide the implied number of infections by the sum the number of cases that have seroconverted until the mid-point of week 5 of the serosurvey (2020-05-06, `r round(cum_cases_sero,0)` out of a reported `r sum(inc_dat$incidI)` cases).
+We find that for every confirmed case we have `r round((sum(gva_pop$total)*.108)/cum_cases_sero,1)` infections in the community.    
+
+```{r}
+sessionInfo()
+```
