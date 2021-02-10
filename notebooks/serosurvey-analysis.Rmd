@@ -444,8 +444,8 @@ library(viridis)
 
 ## assume mean of 6 days from symptom onset to reporting
 reporting_delay <- 6
-symptom_onset_dates <-seq(min(gva_dat$date) - reporting_delay,max(gva_dat$date),by="day")
-symptom_onsets <- c(gva_dat$conf_cases,rep(0,reporting_delay))
+symptom_onset_dates <-seq(min(inc_dat$date) - reporting_delay,max(inc_dat$date),by="day")
+symptom_onsets <- c(inc_dat$incidI,rep(0,reporting_delay))
 
 ## convolve 
 nmax <- 35 # max number of days in PDFS
