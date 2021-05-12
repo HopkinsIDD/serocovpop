@@ -10,15 +10,46 @@ params:
 ---
 
 ```{r setup, include=FALSE}
+if(!require(checkpoint)){
+  install.packages("checkpoint")
+  library(checkpoint)
+}
+checkpoint("2021-05-05", scanForPackages = F)
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
 knitr::opts_knit$set(root.dir = here::here())
 ```
 
 ```{r preamble, include=FALSE}
-library(tidyverse)
-library(rstan)
-library(doMC)
 library(gridExtra)
+
+if(!require(tidyverse)){
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if(!require(rstan)){
+  install.packages("rstan")
+  library(rstan)
+}
+if(!require(doMC)){
+  install.packages("doMC")
+  library(doMC)
+}
+if(!require(gridExtra)){
+  install.packages("gridExtra")
+  library(gridExtra)
+}
+if(!require(loo)){
+  install.packages("loo")
+  library(loo)
+}
+if(!require(parallel)){
+  install.packages("parallel")
+  library(parallel)
+}
+if(!require(doParallel)){
+  install.packages("doParallel")
+  library(doParallel)
+}
 
 source("scripts/utils.R")
 
@@ -26,6 +57,9 @@ cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2"
 
 ## age cuts
 age_cuts <- c(5, 10, 20, 50, 65, 105)
+
+## names of RHAs
+RHA_names <- c(“WRHA”, “PMA”, “IEHA”, “NHRA”, “SHRA”)
 
 ## Stan/JAGS settings, don't need to change
 options(mc.cores = parallel::detectCores()-2) ## use all cores but two for this
@@ -101,6 +135,7 @@ gva_ages <- read_csv("data/canton_age_2019.csv") %>%
 
 ## read and fix serology data
 sero_dat <- read_csv("generated_data/serocov-pop_data_public.csv") %>%
+  mutate(rha = sample(RHA_names, n(), replace = TRUE, prob = rep(0.2, 5))) %>%  ## To simulate the RHA in the test data set (remove for real data)
   rename(household_id = new_household_id) %>% 
   mutate(age_cat = cut(age, age_cuts, right = F)) %>%
   group_by(household_id) %>%
