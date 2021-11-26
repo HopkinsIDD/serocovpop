@@ -6,26 +6,81 @@ output:
   pdf_document: default
   word_document: default
 params:
-  redo: FALSE
+  redo: TRUE
 ---
 
 ```{r setup, include=FALSE}
+if(!require(checkpoint)){
+  install.packages("checkpoint")
+  library(checkpoint)
+}
+checkpoint("2021-05-05", scanForPackages = F)
+use_checkpoint("2021-05-05")
 knitr::opts_chunk$set(echo = FALSE, warning = FALSE)
 knitr::opts_knit$set(root.dir = here::here())
 ```
 
 ```{r preamble, include=FALSE}
-library(tidyverse)
-library(rstan)
-library(doMC)
-library(gridExtra)
+if(!require(tidyverse)){
+  install.packages("tidyverse")
+  library(tidyverse)
+}
+if(!require(rstan)){
+  install.packages("rstan")
+  library(rstan)
+}
+if(!require(doMC)){
+  install.packages("doMC")
+  library(doMC)
+}
+if(!require(gridExtra)){
+  install.packages("gridExtra")
+  library(gridExtra)
+}
+if(!require(loo)){
+  install.packages("loo")
+  library(loo)
+}
+if(!require(parallel)){
+  install.packages("parallel")
+  library(parallel)
+}
+if(!require(doParallel)){
+  install.packages("doParallel")
+  library(doParallel)
+}
+if(!require(icenReg)){
+  install.packages("icenReg")
+  library(icenReg)
+}
+if(!require(viridis)){
+  install.packages("viridis")
+  library(viridis)
+}
+if(!require(devtools)){
+  install.packages("devtools")
+  library(devtools)
+}
+if(!require(cmdstanr)){
+  install.packages("cmdstanr", repos = c("https://mc-stan.org/r-packages/", getOption("repos")))
+  library(cmdstanr)
+}
 
 source("scripts/utils.R")
 
 cbbPalette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
 
 ## age cuts
-age_cuts <- c(5, 10, 20, 50, 65, 105)
+age_cuts <- c(0, 12, 20, 40, 60, 125)
+
+## names of RHAs
+RHA_names <- c("WRHA", "PMA", "IEHA", "NHRA", "SHRA")
+
+# names of age categories in order
+age_order <- c("[0,12)","[12,20)","[20,40)","[40,60)","[60,125)")
+
+if(!exists("params"))
+  params <- list(redo = FALSE)
 
 ## Stan/JAGS settings, don't need to change
 options(mc.cores = parallel::detectCores()-2) ## use all cores but two for this
@@ -47,23 +102,23 @@ out_est_file <- "generated_data/re-seropos.rds"
 
 ## number of positive controls from validation data
 ## Meyer et al, 2020
-pos_control <- 181 #sum(lab_val_dat$Type == "COVID-19 Patient") # 181
+pos_control <- 198 #sum(lab_val_dat$Type == "COVID-19 Patient") # 181
 ## number of negative controls
 ## Meyer et al, 2020
-neg_control <- 176 #sum(lab_val_dat$Type == "Neg. Ctrl.") # 176
+neg_control <- 56 #sum(lab_val_dat$Type == "Neg. Ctrl.") # 176
 
 ## true positive rate for cases
-control_tp_hi <- 154 #lab_val_dat %>%
+control_tp_hi <- 166 #lab_val_dat %>%
   #ilter(Type == "COVID-19 Patient") %>%
   #summarize(fp = sum(`ELISA/CE G Results` == "POS")) %>%
   #unlist() # 154
 
-control_tp_gva <- 143 #lab_val_dat %>%
+control_tp_gva <- 0 #lab_val_dat %>%
   #filter(Type == "COVID-19 Patient") %>%
   #summarize(fp = sum(`ELISA/CE G Result GE` == "POS")) %>%
   #unlist() # 143
 
-control_tp_ifa <- 161 #lab_val_dat %>%
+control_tp_ifa <- 0 #lab_val_dat %>%
   #filter(Type == "COVID-19 Patient") %>%
   #summarize(fp = sum(`ELISA/CE G Result GE` != "NEG" & `rIFA G Result` == "POS")) %>%
   #unlist() # 161
@@ -87,20 +142,20 @@ control_fp_ifa <- 0 #lab_val_dat %>%
 
 ```{r epi data, include = FALSE}
 ## Geneva incidence data
-inc_dat <- read_csv("data/cases_gva.csv") %>%
+inc_dat <- read_csv("data/manitoba_covid_numbers_nov.csv") %>%
   mutate(date = as.Date(date, format = "%d/%m/%y"))
 inc_dat$incidI <- c(0, diff(inc_dat$ncumul_conf))
 inc_dat$incidD <- c(0, diff(inc_dat$ncumul_deceased))
 
 ## Geneva ages
-gva_ages <- read_csv("data/canton_age_2019.csv") %>%
+gva_ages <- read_csv("data/manitoba_demographics_vaccine_2020.csv") %>%
   mutate_at(
     c("men", "women", "total"),
     function(x) str_replace(x, pattern = " ", repl = "") %>% as.numeric()
   )
 
 ## read and fix serology data
-sero_dat <- read_csv("generated_data/serocov-pop_data_public.csv") %>%
+sero_dat <- read_csv("generated_data/householdidanalysis_Oct.csv") %>%
   rename(household_id = new_household_id) %>% 
   mutate(age_cat = cut(age, age_cuts, right = F)) %>%
   group_by(household_id) %>%
@@ -110,14 +165,19 @@ sero_dat <- read_csv("generated_data/serocov-pop_data_public.csv") %>%
     other_inf = hh_inf > 0
   ) %>%
   ungroup() %>%
-  droplevels()
+  droplevels() %>%
+  mutate(rha_name = RHA_names[rha]) %>%
+  mutate(age_cat1 = as.numeric(factor(age_cat, levels=age_order))) #made a numeric age_cat for ageXtime anlaysis, set the order of the factor to age_order before converting to numeric.
 
 wk_ref <- "2"
-age_ref <- "[20,50)"
+age_ref <- "[20,40)"
 sex_ref <- "0"
+rha_name_ref <- "WRHA"
 
 ## age categories
 age_cats <- unique(as.character(sero_dat$age_cat)) %>% sort()
+
+## rha <- c("1","2","3","4","5")
 
 ## find population-level proportions of age and sex for sero_dat
 gva_age_cats <- gva_ages %>%
@@ -126,13 +186,13 @@ gva_age_cats <- gva_ages %>%
     age_cat = cut(age_med, breaks = age_cuts, right = F)
   ) %>%
   filter(age_cat %in% age_cats) %>%
-  group_by(age_cat) %>%
+  group_by(rha,age_cat) %>%
   summarize(
     male = sum(men),
     female = sum(women)
   ) %>%
   pivot_longer(
-    cols = -age_cat,
+    cols = c("male","female"),
     names_to = "Sex",
     values_to = "pop"
   ) %>%
@@ -143,10 +203,13 @@ gva_age_cats <- gva_ages %>%
   full_join(
     expand_grid(
       week = unique(sero_dat$week),
-      Sex = 0:1
+      Sex = 0:1,
+      rha = 1:5
     )
   ) %>%
-  arrange(week)
+  arrange(week) %>%
+  mutate(rha_name = RHA_names[rha]) %>%
+  mutate(age_cat1 = as.numeric(factor(age_cat, levels=age_order)))
 
 ## only the primary member of the household
 primary_dat <- sero_dat %>%
@@ -161,13 +224,13 @@ primary_age_cats <- gva_ages %>%
     age_cat = cut(age_med, breaks = age_cuts, right = F)
   ) %>%
   filter(age_cat %in% primary_dat$age_cat) %>%
-  group_by(age_cat) %>%
+  group_by(rha,age_cat) %>%
   summarize(
     male = sum(men),
     female = sum(women)
   ) %>%
   pivot_longer(
-    cols = -age_cat,
+    cols = c("male","female"),
     names_to = "Sex",
     values_to = "pop"
   ) %>%
@@ -178,25 +241,23 @@ primary_age_cats <- gva_ages %>%
   full_join(
     expand_grid(
       week = unique(primary_dat$week),
-      Sex = 0:1
+      Sex = 0:1,
+      rha = 1:5
     )
   ) %>%
   arrange(week) %>%
-  droplevels()
+  droplevels() %>%
+  mutate(rha_name = RHA_names[rha])
 
 ## set factor levels to reference levels in data
 sero_dat$Sex <- relevel(as.factor(sero_dat$Sex), sex_ref)
 sero_dat$age_cat <- relevel(sero_dat$age_cat, age_ref)
-sero_dat$week <- relevel(as.factor(sero_dat$week), wk_ref)
 gva_age_cats$Sex <- relevel(as.factor(gva_age_cats$Sex), sex_ref)
 gva_age_cats$age_cat <- relevel(gva_age_cats$age_cat, age_ref)
-gva_age_cats$week <- relevel(as.factor(gva_age_cats$week), wk_ref)
 primary_dat$Sex <- relevel(as.factor(primary_dat$Sex), sex_ref)
 primary_dat$age_cat <- relevel(primary_dat$age_cat, age_ref)
-primary_dat$week <- relevel(as.factor(primary_dat$week), wk_ref)
 primary_age_cats$Sex <- relevel(as.factor(primary_age_cats$Sex), sex_ref)
 primary_age_cats$age_cat <- relevel(primary_age_cats$age_cat, age_ref)
-primary_age_cats$week <- relevel(as.factor(primary_age_cats$week), wk_ref)
 
 hh_dat <- sero_dat %>% 
   group_by(household_id) %>% 
@@ -251,6 +312,8 @@ sero_dat %>%
 
 
 ```{r re-stan, cache=F, eval=T}
+sero_dat <- mutate(sero_dat,
+                    time_point = as.numeric(week))
 
 if (!file.exists(out_est_file) | params$redo) {
   ## model the overall seropositivity with a random effect for household
@@ -258,11 +321,11 @@ if (!file.exists(out_est_file) | params$redo) {
     model_script = "stan/serosurvey-analysis-re.stan",
     dat = sero_dat,
     analysis = "ei",
-    coef_eqn = "Sex + age_cat + week",
+    coef_eqn = "Sex + age_cat - 1",
     pos_control = pos_control,
     neg_control = neg_control,
     control_tp = control_tp_hi,
-    control_fp = control_fp_hi,
+    control_fp = control_fp_hi, 
     pop_age_cats = gva_age_cats,
     chains = n_chains,
     iter = n_iter,
@@ -294,11 +357,11 @@ nrow(sero_dat)
 nrow(hh_dat)
 
 "Seroprevalence by week"
-subset_est %>%
+sero_week <-subset_est %>%
   filter(var == "Week") %>%
-  mutate(week = as.factor(as.numeric(val))) %>%
   group_by(sim) %>%
-  mutate(coef_val = ifelse(week == 2, NA,
+  mutate(week = as.numeric(val),
+         coef_val = ifelse(week == 2, NA,
     ifelse(p > p[week == 2], 1, -1)
   )) %>%
   ungroup() %>%
@@ -342,11 +405,61 @@ subset_est %>%
     booktabs = T, linesep = ""
   )
 
+"Seroprevalence by weekXage"
+sero_rha <-subset_est %>%
+  filter(var == "Week_Age") %>%
+  separate(val, c("week", "age_cat"), convert = T) %>%
+  group_by(sim) %>%
+  mutate(coef_val = ifelse(week == 2 & age_cat == "[20,40)", NA,
+    ifelse(p > p[week == 2 & (age_cat == "[20,40)")], 1, -1)
+  )) %>%
+  ungroup() %>%
+  # mutate(week=relevel(val,"1")) %>%
+  left_join(sero_dat %>%
+    group_by(week, age_cat) %>%
+    summarize(
+      n = n(),
+      pos = sum(pos),
+      neg = sum(neg),
+      ind = sum(ind)
+    )) %>%
+  group_by(week, age_cat, n, pos, neg, ind) %>%
+  summarize(
+    `Seroprevalence (95% CI)` = paste0(
+      mean(100 * p) %>%
+        formatC(2, format = "f"), " (",
+      quantile(100 * p, probs = .025) %>%
+        formatC(2, format = "f"), "-",
+      quantile(100 * p, probs = .975) %>%
+        formatC(2, format = "f"), ")"
+    ),
+    p = ifelse(is.na(mean(coef_val)), "--",
+      min(2 * c(mean(coef_val > 0), mean(coef_val < 0))) %>%
+        formatC(4, format = "f")
+    )
+  ) %>%
+  ungroup() %>%
+  mutate(
+    pos = paste0(pos, " (", formatC(100 * pos / n, 2, format = "f"), "%)"),
+    neg = paste0(neg, " (", formatC(100 * neg / n, 2, format = "f"), "%)"),
+    ind = paste0(ind, " (", formatC(100 * ind / n, 2, format = "f"), "%)")
+  ) %>%
+  rename(
+    Week = week, AgeCat = age_cat, Obs = n, `Test positive` = pos, `Test negative` = neg,
+    `Indeterminate` = ind
+  ) %>%
+  knitr::kable(
+    align = c("lcccccc"),
+    caption = "Seroprevalence by week and age",
+    booktabs = T, linesep = ""
+  )
+
+
 "Relative risks"
-subset_est %>%
+rel_risks <-subset_est %>%
   filter(var == "Age") %>%
   group_by(sim) %>%
-  mutate(rr = ifelse(val == "[20,50)", NA, p / p[val == "[20,50)"])) %>%
+  mutate(rr = ifelse(val == "[20,40)", NA, p / p[val == "[20,40)"])) %>%
   ungroup() %>%
   left_join(sero_dat %>%
     group_by(age_cat) %>%
@@ -372,7 +485,21 @@ subset_est %>%
         pos = sum(pos),
         neg = sum(neg),
         ind = sum(ind)
-      ))) %>%
+      )),
+      subset_est %>%
+    filter(var == "RHA") %>%
+    group_by(sim) %>%
+    mutate(rr = ifelse(val == "WRHA", NA, p / p[val == "WRHA"])) %>%
+    ungroup() %>%
+    left_join(sero_dat %>%
+      group_by(rha_name) %>%
+      summarize(
+        n = n(),
+        pos = sum(pos),
+        neg = sum(neg),
+        ind = sum(ind)
+      ),
+      by = c("val" = "rha_name"))) %>%
   group_by(var, val, n, pos, neg, ind) %>%
   summarize(
     `Relative risk (95% CI)` = ifelse(is.na(mean(rr)), "--",
@@ -407,16 +534,20 @@ subset_est %>%
   knitr::kable(
     align = c("lcccccc"), booktabs = T,
     linesep = "",
-    caption = "Relative risks of seropositivity by age and sex"
+    caption = "Relative risks of seropositivity by age, sex, and RHA"
   )
+
+save_kable(sero_week,"sero_week.png")
+save_kable(sero_rha, "sero_rha.png")
+save_kable(rel_risks, "rel_risks.png")
+
 ```
 
 ## Estimate the time of seroconversion and the ratio of infections to reported confirmed cases
 
-To estimate the ratio of implied infections (seroprevalence) to the number of clinically confirmed cases we used the daily number of confirmed COVID-19 cases from the Canton of Geneva ([https://github.com/openZH/covid_19](https://github.com/openZH/covid_19)) and adjusted this time series by an assumed times from symptom onset to test result and from symptom onset to seroconversion. 
+To estimate the ratio of implied infections (seroprevalence) to the number of clinically confirmed cases we used the daily number of confirmed COVID-19 cases from the Canton of Geneva ([https://github.com/openZH/covid_19](https://github.com/openZH/covid_19)) and adjusted this time series by an assumed times from symptom onset to test result and from symptom onset to seroconversion.
 
-
-```{r}
+```{r "survivalFit"}
 library(icenReg)
 lab_val_dat <- readr::read_csv("data/lab_validation_data.csv") %>% 
   mutate(pos = ifelse(pos=="POS",1,0),dps=as.numeric(dps)) %>%
@@ -434,12 +565,12 @@ fit_ln <- icenReg::ic_par(cbind(TL,TR) ~ 1, model = "aft",dist = "lnorm",data = 
 data.frame(fit_g$llk,fit_w$llk,fit_ln$llk)
 ```
 
-```{r}
+```{r "PlotBestFit"}
 plot(fit_ln,fun = "cdf",ylab="Proportion of cases seroconverted",xlab="days after symptom onset.")
 grid()
 ```
 
-```{r}
+```{r "PlotSeroConv"}
 library(viridis)
 
 ## assume mean of 6 days from symptom onset to reporting

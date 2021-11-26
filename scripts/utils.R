@@ -58,8 +58,9 @@ run_analysis_stan_re <- function(model_script,
                                  pop_age_cats,
                                  n_cores = detectCores() - 2,
                                  sex_ref = 0,
-                                 age_ref = "[20,50)",
+                                 age_ref = "[20,40)",
                                  wk_ref = "2",
+                                 rha_name_ref = "WRHA",
                                  redo = F,
                                  chains,
                                  iter,
@@ -90,80 +91,106 @@ run_analysis_stan_re <- function(model_script,
 
   if (!file.exists(stan_out_file) | redo) {
 
-    re_model <- stan_model(model_script)
+    set_cmdstan_path("C:/cmdstan/")
+    re_model <- cmdstan_model(model_script)
 
     # Unique household ids from 1 to N
     u_hh_ids <- unique(ana_dat$household_id)
     ana_dat$u_household_id <- map_dbl(ana_dat$household_id, ~which(u_hh_ids == .))
 
     # Run stan model
-    stan_est <- sampling(re_model,
-                         data = list(
+    cmdstan_est <- re_model$sample(data = list(
                            N_survey = nrow(ana_dat),
                            H = length(u_hh_ids),
+                           n_time = max(sero_dat$time_point),
+                           R = max(sero_dat$age_cat1),
                            hh = ana_dat$u_household_id,
                            p_vars = ncol(X),
                            X = X,
+                           time_point = sero_dat$time_point,
                            survey_pos = ana_dat$pos,
                            N_pos_control = pos_control,
                            control_tp = control_tp,
                            N_neg_control = neg_control,
-                           control_fp = control_fp
+                           control_fp = control_fp,
+                           rha = sero_dat$rha,
+                           age = sero_dat$age_cat1,
+                           diagnostic_file = "diag.csv"
                          ),
                          chains = chains,
-                         iter = iter,
-                         warmup = warmup,
-                         control = control)
+                         parallel_chains = chains,
+                         iter_sampling = iter - warmup,
+                         iter_warmup = warmup,
+                         adapt_delta = control[[1]],
+                         max_treedepth = control[[2]],
+                         refresh = 100)
 
+    stan_est <- rstan::read_stan_csv(cmdstan_est$output_files())
     saveRDS(stan_est, stan_out_file)
   } else {
     cat("Loading pre-computed posteriors from ", stan_out_file, "\n")
     stan_est <- readRDS(stan_out_file)
   }
-
   ## extract log-likelihoods
-  stan_ll <- loo::extract_log_lik(stan_est) %>% loo::loo()
+  stan_ll <- stan_est %>% loo::loo()
 
   ## extract parameters
   beta <- extract(stan_est, pars = "beta")[[1]]
   sigma <- extract(stan_est, pars = "sigma_h")[[1]]
+  sigmas_timepoints <- extract(stan_est, pars = "sigma_t")$sigma_t
+  means_t <- extract(stan_est, pars = "means_t")$means_t
+  z_timepoints <- extract(stan_est, pars = "eta_t")$eta_t
+  n_timepoints <- dim(z_timepoints)[2]
+
+  post_mat <- cbind(beta, sigma, sigmas_timepoints)
 
   pop_cat_mat <- pop_age_cats %>%
     model.matrix(as.formula(paste("~", coef_eqn)), data = .)
 
+  
+  N_rows <- nrow(beta)
+  N_preds <- ncol(beta)
+
   ## compute estimates by age category
+  #Parallel for MacOS
   cl <- parallel::makeCluster(n_cores)
   doParallel::registerDoParallel(cl)
+  #Parallel for Linux
+  #doParallel::registerDoParallel(n_cores)
 
-  pop_cat_p <- foreach(i = 1:nrow(pop_cat_mat),
-                       .combine = rbind,
-                       .inorder = F,
+    pop_cat_p <- foreach(i = 1:nrow(pop_cat_mat),
+                       .combine = bind_rows,
+                       .inorder = T,
                        .packages = c("tidyverse", "foreach")) %dopar%
     {
-      foreach(j = 1:nrow(beta),
-              .combine = rbind,
-              .inorder = T) %do%
-        {
-
-          # Compute probability integrating across in household random effects
-          prob <- integrate(function(x) {
+      
+      output <- apply(as.array(1:N_rows), 1, function(posterior){
+        print(posterior)
+        integrate(function(x) {
             plogis(qnorm(
-              x, beta[j, , drop = F] %*% t(pop_cat_mat[i, , drop = F]),
-              sigma[j]
+              x, post_mat[posterior, 1:N_preds, drop = F] %*% t(pop_cat_mat[i, 1:N_preds, drop = F]) +
+               means_t[posterior, pop_age_cats$week[i]] +
+               post_mat[posterior, N_preds + 2, drop = F] * z_timepoints[posterior, pop_age_cats$week[i], pop_age_cats$age[i]],
+              post_mat[posterior, N_preds + 1]
             ))
-          }, 0, 1)[[1]]
+          }, 0, 1,rel.tol=1e-5)[[1]]
+      })
 
-          tibble(
+      out <- tibble(
             age_cat = pop_age_cats$age_cat[i],
             Sex = pop_age_cats$Sex[i],
             week = pop_age_cats$week[i],
             pop = pop_age_cats$pop[i],
-            seropos = prob
-          ) %>%
-            mutate(sim = j)
-        }
+            rha = pop_age_cats$rha[i],
+            rha_name = pop_age_cats$rha_name[i],
+            seropos = output
+      ) %>%
+      mutate(sim = 1:n())
+      validate_tibble(out)
+      return(out)
     }
-  parallel::stopCluster(cl)
+  # parallel::stopCluster(cl)
+  stopImplicitCluster()
 
   ## overall estimate
   overall_re <- pop_cat_p %>%
@@ -178,15 +205,24 @@ run_analysis_stan_re <- function(model_script,
 
   # weekyl estimates
   wk_re <- pop_cat_p %>%
-    mutate(var = "Week") %>%
+    mutate(var = "Week",
+            week = as.character(week)) %>%
     rename(val = week) %>%
+    group_by(sim, var, val) %>%
+    summarize(p = weighted.mean(seropos, pop)) %>%
+    ungroup()
+
+  # weekly estimates by age
+  wk_age_re <- pop_cat_p %>%
+    mutate(var = "Week_Age",
+           val = paste0(week, "_", age_cat1)) %>%
     group_by(sim, var, val) %>%
     summarize(p = weighted.mean(seropos, pop)) %>%
     ungroup()
 
   ## find age specific probabilities in order to make relative risks
   age_re <- pop_cat_p %>%
-    filter(Sex == sex_ref, week == wk_ref) %>%
+    filter(Sex == sex_ref, week == wk_ref, rha_name == rha_name_ref) %>%
     mutate(var = "Age") %>%
     rename(val = age_cat) %>%
     group_by(sim, var, val) %>%
@@ -195,9 +231,18 @@ run_analysis_stan_re <- function(model_script,
 
   # sex-specific probabilities
   sex_re <- pop_cat_p %>%
-    filter(age_cat == age_ref, week == wk_ref) %>%
+    filter(age_cat == age_ref, week == wk_ref, rha_name == rha_name_ref) %>%
     mutate(var = "Sex") %>%
     rename(val = Sex) %>%
+    group_by(sim, var, val) %>%
+    summarize(p = weighted.mean(seropos, pop)) %>%
+    ungroup()
+
+  # RHA-specific probabilities
+  rha_re <- pop_cat_p %>%
+    filter(age_cat == age_ref, week == wk_ref) %>%
+    mutate(var = "RHA") %>%
+    rename(val = rha_name) %>%
     group_by(sim, var, val) %>%
     summarize(p = weighted.mean(seropos, pop)) %>%
     ungroup()
@@ -218,8 +263,10 @@ run_analysis_stan_re <- function(model_script,
     subset_est = bind_rows(
       overall_re,
       wk_re,
+      wk_age_re,
       sex_re,
-      age_re
+      age_re,
+      rha_re
     )
   )
 
